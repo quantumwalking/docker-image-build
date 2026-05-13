@@ -1,0 +1,50 @@
+name: x86-64 Pull and Save Docker Image
+on:
+  workflow_dispatch:
+    inputs:
+      docker_images:
+        description: '请填写docker镜像名称,多个用英文逗号分开'
+        required: true
+        default: 'centos:centos7'  # 设置默认的 Docker 镜像列表
+
+jobs:
+  pull_and_package:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Clean up Docker to free space
+      run: |
+          docker system prune -a -f
+          docker volume prune -f
+
+    - name: Pull Docker Images and Package
+      run: |
+        images="${{ github.event.inputs.docker_images }}"
+        echo "Generated On: `date`\n" > images-summary.txt
+        IFS=',' read -r -a image_array <<< "$images"
+        for image in "${image_array[@]}"; do
+          docker pull "${image}" --platform "linux/amd64"
+          image_file="${image//\//_}"
+          image_file="${image_file//:/_}"
+          docker save "${image}" -o "${image_file}-amd64.tar"
+          echo "${image}" > images-summary.txt
+        done
+
+    - name: Compress the TAR files
+      run: gzip *-amd64.tar
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: all-images-tar-file
+        path: |
+          ./*-amd64.tar.gz
+          images-summary.txt
+        retention-days: 1  # 将保留天数设置为 1 天 最多可设置90天
+
+    - name: Clean up intermediate files
+      run: |
+        rm -rf *-amd64.tar.gz images-summary.txt
