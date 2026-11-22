@@ -1,4 +1,4 @@
-name: x86-64 Pull and Save Docker Image
+name: x86-64 Pull, Save and Push Docker Images
 
 on:
   workflow_dispatch:
@@ -7,9 +7,18 @@ on:
         description: '请填写 Docker 镜像名称，多个镜像用英文逗号分隔'
         required: true
         default: 'centos:centos7'
+      registry_username:
+        description: '请输入私服用户名'
+        required: true
+      registry_password:
+        description: '请输入私服密码'
+        required: true
+
 jobs:
-  pull_and_package:
+  pull_package_and_push:
     runs-on: ubuntu-latest
+    env:
+      REGISTRY_HOST: registry.macrothinking.cn:8443
 
     steps:
       - name: Checkout repository
@@ -60,6 +69,52 @@ jobs:
             images-summary.txt
           retention-days: 1
 
+      - name: Login and push images to private registry
+        env:
+          DOCKER_IMAGES: ${{ github.event.inputs.docker_images }}
+          REGISTRY_USERNAME: ${{ github.event.inputs.registry_username }}
+          REGISTRY_PASSWORD: ${{ github.event.inputs.registry_password }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$REGISTRY_USERNAME" || -z "$REGISTRY_PASSWORD" ]]; then
+            echo '私服用户名和密码不能为空。' >&2
+            exit 1
+          fi
+
+          # Mask the password in any subsequent workflow log output.
+          echo "::add-mask::$REGISTRY_PASSWORD"
+          printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
+            --username "$REGISTRY_USERNAME" \
+            --password-stdin
+
+          IFS=',' read -r -a raw_images <<< "$DOCKER_IMAGES"
+
+          for raw_image in "${raw_images[@]}"; do
+            source_image="$(printf '%s' "$raw_image" | xargs)"
+            if [[ -z "$source_image" ]]; then
+              continue
+            fi
+
+            # Remove a source registry host while preserving the image path and tag.
+            image_path="$source_image"
+            first_component="${source_image%%/*}"
+            if [[ "$source_image" == */* ]] && \
+              [[ "$first_component" == *.* || "$first_component" == *:* || "$first_component" == 'localhost' ]]; then
+              image_path="${source_image#*/}"
+            fi
+
+            target_image="$REGISTRY_HOST/$image_path"
+            docker tag "$source_image" "$target_image"
+            docker push "$target_image"
+            printf '%s -> %s\n' "$source_image" "$target_image"
+          done
+
+      - name: Logout from private registry
+        if: ${{ always() }}
+        run: docker logout "$REGISTRY_HOST" || true
+
       - name: Clean up intermediate files
+        if: ${{ always() }}
         run: |
           rm -f docker-images-amd64.tar.gz images-summary.txt
